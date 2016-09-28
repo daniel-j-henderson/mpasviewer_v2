@@ -11,23 +11,27 @@ program main
    
    
    character(len=NF90_MAX_NAME), dimension(20) :: Variables = ' ', cmdVariables = ' '
-   character(len=100) :: meshInfoFile = ' ', meshDataFile = ' ', outputfile = 'latlon.output.nc'
-   character(len=600) :: commandarg
+   character(len=100) :: outputfile = 'latlon.'
    character(len=NF90_MAX_NAME) :: iVar = ' '
    logical :: bothFiles = .false., infoOnly = .false., dataOnly = .false., rotated = .false., file_present
-   integer :: ierr, iFile, i, j, k, l, n, nx, ny, nFiles, nargs
+   integer :: ierr, iFile, i, j, k, l, n, nFiles, nargs
    character (len = NF90_MAX_NAME), dimension(:), allocatable :: varstemp
-   real(kind=RKIND) :: original_latitude_degrees = 0.0, original_longitude_degrees = 0.0, new_latitude_degrees = 0.0, new_longitude_degrees = 0.0, birdseye_rotation_counter_clockwise_degrees = 0.0
+
+   integer :: nx = 200, ny = 100
+   real(kind=RKIND) :: original_latitude_degrees = 0.0, original_longitude_degrees = 0.0, &
+                       new_latitude_degrees = 0.0, new_longitude_degrees = 0.0, birdseye_rotation_counter_clockwise_degrees = 0.0
    real(kind=RKIND) :: lat_start, lon_start, lat_end, lon_end
 
-   character(len=StrKIND) :: fname, static_file = ''
+   real(kind=RKIND), dimension(:,:), pointer :: elem
+   character(len=StrKIND) :: arg, static_file = ''
    character(len=StrKIND), dimension(:), allocatable :: files
    type(ncfile) :: ncin, ncout
    type(interpgrid) :: grid 
 
    
-   namelist /interpolator_settings/ Variables, meshInfoFile, meshDataFile, outputfile, nx, ny, lat_start, lat_end, lon_start, lon_end
-!   namelist /rotate_settings/ original_latitude_degrees, original_longitude_degrees, new_latitude_degrees, new_longitude_degrees, birdseye_rotation_counter_clockwise_degrees
+   namelist /interpolator_settings/ Variables, outputfile, nx, ny, lat_start, lat_end, lon_start, lon_end
+!   namelist /rotate_settings/ original_latitude_degrees, original_longitude_degrees, &
+!                              new_latitude_degrees, new_longitude_degrees, birdseye_rotation_counter_clockwise_degrees
 
    inquire(file='namelist.input', exist=file_present)
    if (file_present) then
@@ -39,25 +43,11 @@ program main
     
    grid%nx = nx
    grid%ny = ny
-   grid%lat_start = lat_start
-   grid%lat_end = lat_end
-   grid%lon_start = grid%lon_start
-   grid%lon_end = lon_end 
+   grid%lat_start = lat_start * PI / 180.0
+   grid%lat_end = lat_end * PI / 180.0
+   grid%lon_start = grid%lon_start * PI / 180.0
+   grid%lon_end = lon_end  * PI / 180.0
     
-   call get_command(commandarg, l, ierr)
-   
-   if (index(commandarg, '-o') > 0) then
-      outputfile = ' '
-      i = index(commandarg, '-o')
-      i = i+3
-      k = 1
-      do while (commandarg(i:i) /= ' ')
-         outputfile(k:k) = commandarg(i:i)
-         k = k+1
-         i = i+1
-      end do
-   end if
-
    n = 0
    do i=1, size(Variables)
       if (len(trim(Variables(i))) > 0) n = n+1
@@ -65,37 +55,50 @@ program main
 
    nargs = command_argument_count()
    do i=1, nargs
-      call get_command_argument(i, fname)
-      if (trim(fname) == '-v') then
+      call get_command_argument(i, arg)
+      !count number of cmd line variables provided
+      if (trim(arg) == '-v') then
          j = i+1
-         call get_command_argument(j, fname)
-         do while(fname(1:1) .ne. '-' .and. j <= nargs)
+         call get_command_argument(j, arg)
+         do while(arg(1:1) .ne. '-' .and. j <= nargs)
             n = n+1
             j = j+1
-            call get_command_argument(j, fname)
+            call get_command_argument(j, arg)
          end do
-         exit
+      !read the output filename prefix provided
+      else if (trim(arg) == '-o') then
+         call get_command_argument(i+1, outputfile)
       end if
    end do
-        
+       
+   !n = number of variables
+   if (n == 0) then 
+      write (0,*) "You must provide variables to be interpolated, either using the namelist or the command line option, whichever is more convenient"
+      stop
+   end if
+
    allocate(varstemp(n))
 
+
+   k = 0
    do i=1, nargs
-      call get_command_argument(i, fname)
-      if (trim(fname) == '-v') then
+      call get_command_argument(i, arg)
+      !extract the actual variables names from the cmd line
+      if (trim(arg) == '-v') then
          j = i+1
          k = 1
-         call get_command_argument(j, fname)
-         do while(fname(1:1) .ne. '-' .and. j <= nargs)
-            varstemp(k) = fname
+         call get_command_argument(j, arg)
+         do while(arg(1:1) .ne. '-' .and. j <= nargs)
+            varstemp(k) = arg
             j = j+1
             k = k+1
-            call get_command_argument(j, fname)
+            call get_command_argument(j, arg)
          end do
          exit
       end if
    end do
 
+   !add the namelist ones to the array
    j = 1
    k = k+1
    do while (k <= n)
@@ -105,17 +108,20 @@ program main
    end do
     
    
+   !read in all the file names. must be the first cmd line args provided
    i=1
    nFiles = 0   
-   call get_command_argument(1, fname)
-   do while(fname(1:1) .ne. '-')
-      if (index(fname, '.nc', back=.true.) .ne. len(trim(fname)) - 2) then
+   call get_command_argument(1, arg)
+   do while(arg(1:1) .ne. '-' .and. i <= nargs)
+      if (len(trim(arg)) == 0) cycle
+      if (index(arg, '.nc', back=.true.) .ne. len(trim(arg)) - 2) then
          write (0,*) "All input files must be netcdf files"
+         write (0,*) arg
          stop
       end if
       nFiles = nFiles + 1
       i = i+1
-      call get_command_argument(i, fname)
+      call get_command_argument(i, arg)
    end do
 
    if (nFiles < 1) then
@@ -124,7 +130,9 @@ program main
    end if
 
    allocate(files(nFiles))
-   
+   files(:) = ''
+    
+   !the first static file encountered will be used for mesh info
    do i=1, nFiles
       call get_command_argument(i, files(i))
       if (len(trim(static_file)) == 0) then
@@ -135,22 +143,12 @@ program main
    end do
 
     
-    ! Determine if we have one or both files, and set the filenames accordingly
-
    ncin%filename = static_file
    if (len(trim(ncin%filename)) == 0) then
       write (0,*) "At least one of the files provided must contain the all the static mesh information fields."
       stop
    end if
-
    
-   if(n == 0) then
-      write (0,*) "Must provide the desired variables in the namelist or command line."
-      stop
-   end if
-
-   
-   ! edit the open file function to perform the setup() also 
    call open_mpas_file(ncin, 'NF90_NOWRITE')
    write (0,*) "Opened "//trim(ncin%filename)
    write (0,*) "Calling create_grid"
@@ -160,8 +158,14 @@ program main
    call close_mpas_file(ncin)
 
    do iFile = 1, nFiles
+      ncin%filename = ''
       ncin%filename = files(iFile)
 
+      inquire(file=trim(ncin%filename), exist=file_present)
+      if (.not. file_present) then
+         write (0,*) "The file "//trim(ncin%filename)//" is not present, skipping."
+         cycle
+      end if
       call open_mpas_file(ncin, 'NF90_NOWRITE')
       write (0,*) "Opened "//trim(ncin%filename)
 
@@ -196,6 +200,16 @@ program main
             call copy_data(ncin, ncout, varstemp(i), grid)
          end if
       end do
+
+      allocate(elem(grid%nx, grid%ny))
+      do i=1, grid%nx
+         elem(i,:) = grid%lons(i) * 180.0 / PI
+      end do
+      call put_variable_2dREAL(ncout, elem, 'lon_pt')
+      do i=1, grid%ny
+         elem(:,i) = grid%lats(i) * 180.0 / PI
+      end do
+      call put_variable_2dREAL(ncout, elem, 'lat_pt')
                  
       write (0,*) "Closing "//trim(ncin%filename)
       call close_mpas_file(ncin)

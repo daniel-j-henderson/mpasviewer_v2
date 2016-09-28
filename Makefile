@@ -1,45 +1,26 @@
-
 INCLUDES = $(wildcard *.o)
 
-ifneq "$(NETCDF)" ""
-        INCLUDES += -I$(NETCDF)/include
-        LIBS += -L$(NETCDF)/lib
-        NCLIB = -lnetcdf
-        NCLIBF = -lnetcdff
-        ifneq ($(wildcard $(NETCDF)/lib/libnetcdff.*), ) # CHECK FOR NETCDF4
-                LIBS += $(NCLIBF)
-        endif # CHECK FOR NETCDF4
-        LIBS += $(NCLIB)
-endif
+LIBS = $(shell nc-config --libs)
 
+INCLUDES += -I$(shell nc-config --includedir)
+
+all:
+	@echo "*********************************************"
+	@echo "  Use a target, such as ifort or gfortran"
+	@echo "*********************************************"
 
 gfortran:
-		( $(MAKE) all \
-        "FC = gfortran" \
-        "FFLAGS = -ffree-form --std=legacy -g -fbacktrace -ffree-line-length-none -fdefault-real-8" \
-		"LDFLAGS = ")	
+	cd src; $(MAKE) FC="gfortran" \
+	INCLUDES="$(INCLUDES)" \
+	LIBS="$(LIBS)" \
+	FFLAGS="-ffree-form -fbacktrace -g --std=legacy -ffree-line-length-none -fdefault-real-8" 
 
 ifort:
-		( $(MAKE) all \
-        "FC = ifort" \
-        "FFLAGS = -autodouble" \
-		"LDFLAGS = ")		
-		
-
-
-all: mpasviewer.o
-
-mpasviewer.o: driver.f90 utils.o file_manip.o params.o
-	$(FC) $(FFLAGS)  driver.f90 $(INCLUDES) utils.o file_manip.o params.o -o mpasviewer 
-
-file_manip.o: file_manip.f90 params.o
-	$(FC) $(FFLAGS) -c file_manip.f90 $(INCLUDES) params.o
-
-params.o: params.f90
-	$(FC) $(FFLAGS) -c params.f90
-
-utils.o: utils.f90 file_manip.o params.o
-	$(FC) $(FFLAGS) -c utils.f90 file_manip.o params.o $(INCLUDES)
-
+	cd src; $(MAKE) FC="ifort" \
+	INCLUDES="$(INCLUDES)" \
+	LIBS="$(LIBS)" \
+	FFLAGS="-traceback -g -debug all -autodouble" 
+						
 clean:
-	rm *.o mpasviewer *.mod 
+	cd src; $(MAKE) clean
+	rm mpasviewer

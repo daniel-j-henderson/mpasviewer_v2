@@ -770,6 +770,19 @@ module mpas_file_manip
       ierr = nf90_get_att(f%ncid, NF90_GLOBAL, trim(att_name), field)
       if (ierr /= NF90_NOERR) call handle_err(ierr, 'nf90_get_att', .false., 'get_attribute_real')
    end subroutine get_attribute_REAL
+
+   subroutine put_att_str(f, var_name, att_name, field)
+      implicit none
+
+      type(ncfile) :: f
+      character(len=*), intent(in) :: var_name, att_name, field
+      integer :: ierr, varid
+
+      ierr = nf90_inq_varid(f%ncid, var_name, varid)
+      if (ierr /= NF90_NOERR) call handle_err(ierr, 'nf90_inq_varid', .false., 'put_att_str')
+      ierr = nf90_put_att(f%ncid, varid, att_name, field)
+      if (ierr /= NF90_NOERR) call handle_err(ierr, 'nf90_put_att', .false., 'put_att_str')
+   end subroutine put_att_str
    
    subroutine close_mpas_file(f)
       implicit none

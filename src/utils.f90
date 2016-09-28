@@ -1,9 +1,14 @@
 module utils
    use netcdf
    use mpas_file_manip
+
+   integer, parameter :: NN=1, WP=2
+
    type :: interpgrid
+      integer :: mode = NN
       integer, dimension(:,:), pointer :: cell_map, edge_map, vertex_map
       real (kind=RKIND) :: lat_start, lat_end, lon_start, lon_end
+      real (kind=RKIND), dimension(:), pointer :: lats, lons
       integer :: nx, ny
    end type interpgrid
 
@@ -26,7 +31,7 @@ module utils
       end if
 
 
-      allocate(grid%cell_map(grid%nx, grid%ny))
+      allocate(grid%cell_map(grid%nx, grid%ny), grid%lats(grid%ny), grid%lons(grid%nx))
          
       
       call get_variable_1dREAL(f, 'latCell', latElem)
@@ -39,13 +44,15 @@ module utils
       dx = (grid%lon_end - grid%lon_start) / grid%nx
       dy = (grid%lat_end - grid%lat_start) / grid%ny
       do j=1, grid%ny
-         lat_pt = grid%lat_start + (j-1) * dy + dy / 2.0
-         lat_pt = lat_pt * PI / 180.0
+         grid%lats(j) = grid%lat_start + (j-1) * dy + dy / 2.0
+      end do
       do i=1, grid%nx
-         lon_pt = grid%lon_start + (i-1) * dx + dx / 2.0
-         lon_pt = lon_pt * PI / 180.0
-         
-         nearest_cell = nearest_cell_path(lat_pt, lon_pt, nearest_cell, &
+         grid%lons(i) = grid%lon_start + (i-1) * dx + dx / 2.0
+      end do
+
+      do j=1, grid%ny
+      do i=1, grid%nx
+         nearest_cell = nearest_cell_path(grid%lats(j), grid%lons(i), nearest_cell, &
                                   nEdgesOnCell, cellsOnCell, latElem, lonElem)
          grid%cell_map(i, j) = nearest_cell
       end do
@@ -60,15 +67,13 @@ module utils
 
       write (0,*) "  making vertex_map"
       do j=1, grid%ny
-         lat_pt = grid%lat_start + (j-1) * dy + dy / 2.0
       do i=1, grid%nx
-         lon_pt = grid%lon_start + (i-1) * dx + dx / 2.0
          iCell = grid%cell_map(i, j)
          v = verticesOnCell(1, iCell)
-         mindist = sphere_distance(latElem(v), lonElem(v), lat_pt, lon_pt, 1.0)
+         mindist = sphere_distance(latElem(v), lonElem(v), grid%lats(j), grid%lons(i), 1.0)
          do k = 2, nEdgesOnCell(iCell)  
             temp = verticesOnCell(k, iCell)
-            dist = sphere_distance(latElem(temp), lonElem(temp), lat_pt, lon_pt, 1.0)
+            dist = sphere_distance(latElem(temp), lonElem(temp), grid%lats(j), grid%lons(i), 1.0)
             if (dist < mindist) then
                mindist = dist
                v = temp
@@ -92,10 +97,10 @@ module utils
          lon_pt = grid%lon_start + (i-1) * dx + dx / 2.0
          iCell = grid%cell_map(i, j)
          e = edgesOnCell(1, iCell)
-         mindist = sphere_distance(latElem(v), lonElem(v), lat_pt, lon_pt, 1.0)
+         mindist = sphere_distance(latElem(v), lonElem(v), grid%lats(j), grid%lons(i), 1.0)
          do k = 2, nEdgesOnCell(iCell)  
             temp = edgesOnCell(k, iCell)
-            dist = sphere_distance(latElem(temp), lonElem(temp), lat_pt, lon_pt, 1.0)
+            dist = sphere_distance(latElem(temp), lonElem(temp), grid%lats(j), grid%lons(i), 1.0)
             if (dist < mindist) then
                mindist = dist
                e = temp
@@ -126,14 +131,34 @@ module utils
       implicit none
       type(ncfile) :: fin, fout
       character(len=*), dimension(:), intent(inout) :: vars
-      integer :: i
+      integer :: i, ierr, varid, xdimid, ydimid
 
       do i=1, size(vars)
          if (.not. fout%contains_elem(VAR, trim(vars(i))) .and. fin%contains_elem(VAR, trim(vars(i)))) then
            call copy_variable_defmode(fin, fout, vars(i))
+           call put_att_str(fout, vars(i), 'coordinates', 'lat_pt lon_pt')
          end if
       end do 
 
+      ierr = nf90_inq_dimid(fout%ncid, 'xDim', xdimid)
+      if (ierr /= NF90_NOERR) call handle_err(ierr, 'nf90_inq_dimid', .false., 'define_variables_io')
+
+      ierr = nf90_inq_dimid(fout%ncid, 'yDim', ydimid)
+      if (ierr /= NF90_NOERR) call handle_err(ierr, 'nf90_inq_dimid', .false., 'define_variables_io')
+
+      if (.not. fout%contains_elem(VAR, 'lat_pt')) then
+         ierr = nf90_def_var(fout%ncid, 'lat_pt', NF90_REAL, (/xdimid, ydimid/), varid)
+         if (ierr /= NF90_NOERR) call handle_err(ierr, 'nf90_def_var', .false., 'define_variables_io')
+         call fout%add_var_record('lat_pt')
+         call put_att_str(fout, 'lat_pt', 'units', 'degree_east')
+      end if
+      if (.not. fout%contains_elem(VAR, 'lon_pt')) then
+         ierr = nf90_def_var(fout%ncid, 'lon_pt', NF90_REAL, (/xdimid, ydimid/), varid)
+         if (ierr /= NF90_NOERR) call handle_err(ierr, 'nf90_def_var', .false., 'define_variables_io')
+         call fout%add_var_record('lon_pt')
+         call put_att_str(fout, 'lon_pt', 'units', 'degree_north')
+      end if
+          
    end subroutine define_variables_io
 
    subroutine copy_data(fin, fout, var_name, grid)

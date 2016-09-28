@@ -1,20 +1,6 @@
 &interpolator_settings
-!	Variables = 'ter', 'zz', 'areaCell', 'bdyMaskCell' !Desired variables to interpolate. Up to 20.
+	Variables = 'ter', 'zz', 'areaCell', 'bdyMaskCell' !Desired variables to interpolate. Up to 20.
 	
-	
-	!Mesh Info File :: This file contains all the mesh information, like CellsOnCell or xCell and such, needed for the program.
-	!If all Info and Data can be found in the same file, put one of these fields as the filename, the other as a ' '.
-	
-!	meshInfoFile = 'outputfile.nc' !filename.nc
-	
-	
-	!Mesh Data File :: This file contains all the mesh data for every field you wish to interpolate. It should have the same size/characteristics
-	!of the Info file, but need not contain mesh metadata like cell coordinates and such things.
-	!If all Info and Data can be found in the same file, put one of these fields as the filename, the other as a ' '.
-
-	meshDataFile = ' ' !filename.nc
-
-
 	outputfile = 'myNewFile.' !Whatever you'd like to call the output file
 	
 	nx = 200 !Number of E/W gridpoints
