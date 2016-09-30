@@ -46,10 +46,376 @@ module utils
          call rotate(grid, orig_lat, orig_lon, new_lat, new_lon, birdseye) 
       end if
 
-      if (grid%mode == NN) call create_maps_NN(grid, f)
+      call create_maps_NN(grid, f)
+      if (grid%mode == WP) then
+         call calculate_weights_WP(grid, f)
+      end if
 
    end subroutine create_grid
+
+   subroutine calculate_weights_WP(grid, f)
+      implicit none
+      type(interpgrid) :: grid
+      type(ncfile) :: f
+
+      integer, dimension(:), pointer :: nEdgesOnCell
+      integer, dimension(:,:), pointer :: verticesOnCell, cellsOnVertex
+      real(kind=RKIND), dimension(:), pointer :: latCell, lonCell, latEdge, lonEdge, latVertex, lonVertex
+      real(kind=RKIND), dimension(:, :), allocatable :: vertCoords
+      real(kind=RKIND), dimension(3) :: pt
+      integer :: i, j, k, c, v, nVertices
+
+
+      ! For cell-based fields
+      call get_variable_1dREAL(f, 'latCell', latCell)
+      call get_variable_1dREAL(f, 'lonCell', lonCell)
+      call get_variable_2dINT(f, 'cellsOnVertex', cellsOnVertex)
+      allocate(vertCoords(3,3))
+
+      allocate(grid%cell_weights(3, grid%nx, grid%ny))
+      do j=1, grid%ny
+      do i=1, grid%nx
+         do k=1, 3
+            c = cellsOnVertex(k, grid%vertex_map(i,j))
+            call con_lx(latCell(c), lonCell(c), 1.0, vertCoords(1, k), vertCoords(2, k), vertCoords(3, k))
+         end do
+         call con_lx(grid%lats(i,j), grid%lons(i,j), 1.0, pt(1), pt(2), pt(3))
+         grid%cell_weights(:,i,j) = mpas_wachspress_coordinates(3,  vertCoords, pt, .true., 1.0)
+      end do
+      end do
+      deallocate(latCell, lonCell, vertCoords)
+
+      ! For vertex-based fields
+      call get_variable_1dREAL(f, 'latVertex', latVertex)
+      call get_variable_1dREAL(f, 'lonVertex', lonVertex)
+      call get_variable_1dINT(f, 'nEdgesOnCell', nEdgesOnCell)
+      call get_variable_2dINT(f, 'verticesOnCell', verticesOnCell)
+
+      do j=1, grid%ny
+      do i=1, grid%nx
+         c = grid%cell_map(i,j)
+         nVertices = nEdgesOnCell(c)
+         if (allocated(vertCoords)) deallocate(vertCoords)
+         allocate(vertCoords(3, nVertices))
+         do k=1, nVertices
+            v = verticesOnCell(k, c)
+            call con_lx(latVertex(v), lonVertex(v), 1.0, vertCoords(1,k), vertCoords(2,k), vertCoords(3,k))
+         end do
+         call con_lx(grid%lats(i,j), grid%lons(i,j), 1.0, pt(1), pt(2), pt(3))
+         grid%vertex_weights(:,i,j) = mpas_wachspress_coordinates(nVertices, vertCoords, pt, .true., 1.0)
+      end do
+      end do
+      deallocate(latVertex, lonVertex, vertCoords, verticesOnCell, nEdgesOnCell)
+      
+   end subroutine calculate_weights_WP
+
+!***********************************************************************
+!
+!  function mpas_wachspress_coordinates
+!
+!> \brief Compute the barycentric Wachspress coordinates for a polygon
+!> \author  Phillip Wolfram
+!> \date    01/26/2015
+!> \details
+!>  Computes the barycentric Wachspress coordinates for a polygon with nVertices
+!>  points in R3, vertCoords for a particular pointInterp with normalized radius.
+!>  Follows Gillette, A., Rand, A., Bajaj, C., 2011.
+!>  Error estimates for generalized barycentric interpolation.
+!>  Advances in computational mathematics 37 (3), 417–439.
+!>  Optimized version of mpas_wachspress_coordinates uses optional cached B_i areas
+!------------------------------------------------------------------------
+   function mpas_wachspress_coordinates(nVertices, vertCoords, pointInterp, on_a_sphere, sphere_radius) !{{{
+      implicit none
+
+      ! input points
+      integer, intent(in) :: nVertices
+      real (kind=RKIND), dimension(3, nVertices), intent(in) :: vertCoords
+      real (kind=RKIND), dimension(3), intent(in) :: pointInterp
+      ! output
+      real (kind=RKIND), dimension(nVertices) :: mpas_wachspress_coordinates
+      ! computational intermediates
+      real (kind=RKIND), dimension(nVertices) :: wach       ! The wachpress area-product
+      real (kind=RKIND) :: wach_total                       ! The wachpress total weight
+      integer :: i, j                                       ! Loop indices
+      integer :: im1, i0, ip1                               ! im1 = (i-1), i0 = i, ip1 = (i+1)
+
+      ! triangle areas to compute wachspress coordinate
+      real (kind=RKIND), dimension(nVertices) :: areaA
+      real (kind=RKIND), dimension(nVertices) :: areaB
+
+      logical, intent(in) :: on_a_sphere
+      real(kind=RKIND), intent(in), optional :: sphere_radius
+      real(kind=RKIND) :: radiusLocal
+
+      if ( on_a_sphere ) then
+         radiusLocal = sphere_radius
+      else
+         radiusLocal = 1.0_RKIND
+      end if
+
+     ! compute areas
+     do i = 1, nVertices
+        ! compute first area B_i
+        ! get vertex indices
+        im1 = mod(nVertices + i - 2, nVertices) + 1
+        i0  = mod(nVertices + i - 1, nVertices) + 1
+        ip1 = mod(nVertices + i    , nVertices) + 1
+
+        ! precompute B_i areas
+        ! always the same because B_i independent of xp,yp,zp
+        ! (COULD CACHE AND USE RESULT FROM ARRAY FOR FURTHER OPTIMIZATION)
+        areaB(i) = mpas_triangle_signed_area(vertCoords(:, im1), vertCoords(:, i0), vertCoords(:, ip1), on_a_sphere, radiusLocal)
+     end do
+
+      ! compute areas
+      do i = 1, nVertices
+         ! compute first area B_i
+         ! get vertex indices
+         im1 = mod(nVertices + i - 2, nVertices) + 1
+         i0  = mod(nVertices + i - 1, nVertices) + 1
+         ip1 = mod(nVertices + i    , nVertices) + 1
+
+         ! compute A_ij areas
+         ! must be computed each time
+         areaA(i0) = mpas_triangle_signed_area(pointInterp, vertCoords(:, i0), vertCoords(:, ip1), on_a_sphere, radiusLocal)
+
+         ! precomputed B_i areas, cached
+      end do
+
+
+      ! for each vertex compute wachpress coordinate
+      do i = 1, nVertices
+         wach(i) = areaB(i)
+         do j = (i + 1), (i + nVertices - 2)
+            i0  = mod(nVertices + j - 1, nVertices) + 1
+            ! accumulate products for A_ij subareas
+            wach(i) = wach(i) * areaA(i0)
+         end do
+      end do
+
+      ! get summed weights for normalization
+      wach_total = 0
+      do i = 1, nVertices
+         wach_total = wach_total + wach(i)
+      end do
+
+      ! compute lambda
+      mpas_wachspress_coordinates= 0.0_RKIND
+      do i = 1, nVertices
+         mpas_wachspress_coordinates(i) = wach(i)/wach_total
+      end do
+
+   end function mpas_wachspress_coordinates!}}}
+
+
+!***********************************************************************
+!
+!  routine mpas_wachspress_interpolate
+!
+!> \brief Interpolate using barycentric Wachspress coordinates
+!> \author  Phillip Wolfram
+!> \date    03/27/2015
+!> \details
+!>  Interpolate using the barycentric Wachspress coordinates for a polygon with nVertices
+!>  having values phi.
+!------------------------------------------------------------------------
+   real (kind=RKIND) function mpas_wachspress_interpolate(lambda, phi) !{{{
+      implicit none
+
+      ! input points
+      real (kind=RKIND), dimension(:), intent(in) :: lambda   !< Input: Wachspress coordinate / weight
+      real (kind=RKIND), dimension(:), intent(in) :: phi      !< Input: values at lambda weights
+      ! output for function
+      !real (kind=RKIND), intent(out) :: mpas_wachspress_interpolate
+
+      mpas_wachspress_interpolate = sum(phi * lambda)
+
+   end function mpas_wachspress_interpolate! }}}
+
+!***********************************************************************
+!
+!  routine mpas_triangle_signed_area
+!
+!> \brief   Calculates area of a triangle, whether on a sphere or a plane.
+!> \author  Matthew Hoffman
+!> \date    13 January 2015
+!> \details
+!>  This routine calculates the area of a triangle whether on a sphere or a plane.
+!>  Note this does not handle triangles spanning planar periodic meshes because mpas_triangle_signed_area_plane does not!
+!-----------------------------------------------------------------------
+   real(kind=RKIND) function mpas_triangle_signed_area(a, b, c, on_a_sphere, radius)!{{{
+      !-----------------------------------------------------------------
+      ! input variables
+      !-----------------------------------------------------------------
+      real(kind=RKIND), dimension(3), intent(in) :: a, b, c  !< Input: 3d (x,y,z) points forming the triangle for which to get the area
+      !-----------------------------------------------------------------
+      ! local variables
+      !-----------------------------------------------------------------
+      logical, intent(in) :: on_a_sphere
+      real(kind=RKIND), dimension(3) :: normalvec
+      real(kind=RKIND), intent(in) :: radius
+
+      if (on_a_sphere) then
+         mpas_triangle_signed_area = mpas_triangle_signed_area_sphere(a, b, c, radius)
+      else
+         normalvec = (/ 0, 0, 1 /)
+!         mpas_triangle_signed_area = mpas_triangle_signed_area_plane(a, b, c, normalvec)
+      endif
+   end function mpas_triangle_signed_area !}}}
    
+!***********************************************************************
+!
+!  routine mpas_triangle_signed_area_plane
+!
+!> \brief   Calculates signed area of a triangle in a plane
+!> \author  Matthew Hoffman
+!> \date    13 January 2015
+!> \details
+!>  This routine calculates the area of a triangle in a plane.
+!>  Uses cross product.  Signed area will be positive if the vertices are oriented counterclockwise.
+!>  Note this does not handle triangles spanning periodic meshes!
+!-----------------------------------------------------------------------
+!   real(kind=RKIND) function mpas_triangle_signed_area_plane(a, b, c, normalvec)!{{{
+!      !-----------------------------------------------------------------
+!      ! input variables
+!      !-----------------------------------------------------------------
+!      real(kind=RKIND), dimension(3), intent(in) :: a, b, c  !< Input: 3d (x,y,z) points forming the triangle for which to calculate the area
+!      real(kind=RKIND), dimension(3), intent(in) :: normalvec  !< Input: 3d vector indicating the normal direction for the plane for assigning a sign to the area
+!      !-----------------------------------------------------------------
+!      ! local variables
+!      !-----------------------------------------------------------------
+!      real(kind=RKIND), dimension(3) :: ab, ac, crossprod, triangleNormal
+!
+!      ab = b - a
+!      ac = c - a
+!      call mpas_cross_product_in_r3(ab, ac, crossprod)
+!      if (mpas_vec_mag_in_r3(crossprod) == 0.0_RKIND) then
+!         mpas_triangle_signed_area_plane = 0.0_RKIND
+!      else
+!         triangleNormal = crossprod / mpas_vec_mag_in_r3(crossprod)
+!         mpas_triangle_signed_area_plane = 0.5_RKIND * (mpas_vec_mag_in_r3(crossprod)) *  &
+!              sum(triangleNormal * normalvec)
+!      endif
+!   end function mpas_triangle_signed_area_plane !}}}
+
+
+!***********************************************************************
+!
+!  routine mpas_triangle_signed_area_sphere
+!
+!> \brief   Calculates area of a triangle on a sphere
+!> \author  Matthew Hoffman
+!> \date    13 January 2015
+!> \details
+!>  This routine calculates the area of a triangle on the surface of a sphere.
+!>  Uses the spherical analog of Heron's formula.
+!>  Copied from mesh generator.  A CCW winding angle is positive.
+!-----------------------------------------------------------------------
+   real(kind=RKIND) function mpas_triangle_signed_area_sphere(a, b, c, radius)!{{{
+      !-----------------------------------------------------------------
+      ! input variables
+      !-----------------------------------------------------------------
+      real(kind=RKIND), dimension(3), intent(in) :: a, b, c  !< Input: 3d (x,y,z) points forming the triangle in which to calculate the bary weights
+      real(kind=RKIND), intent(in) :: radius  !< sphere radius
+      !-----------------------------------------------------------------
+      ! local variables
+      !-----------------------------------------------------------------
+      real(kind=RKIND) :: ab, bc, ca, semiperim, tanqe
+      real(kind=RKIND), dimension(3) :: ablen, aclen, Dlen
+
+      ab = sphere_distance_x(a(1), a(2), a(3), b(1), b(2), b(3))/radius
+      bc = sphere_distance_x(b(1), b(2), b(3), c(1), c(2), c(3))/radius
+      ca = sphere_distance_x(c(1), c(2), c(3), a(1), a(2), a(3))/radius
+      semiperim = 0.5 * (ab + bc + ca)
+
+      tanqe = sqrt(max(0.0_RKIND,tan(0.5_RKIND * semiperim) * tan(0.5_RKIND * (semiperim - ab)) &
+                   * tan(0.5_RKIND * (semiperim - bc)) * tan(0.5_RKIND * (semiperim - ca))))
+
+      mpas_triangle_signed_area_sphere = 4.0_RKIND * radius * radius * atan(tanqe)
+
+      ! computing correct signs (in similar fashion to mpas_sphere_angle)
+      ablen(1) = b(1) - a(1)
+      ablen(2) = b(2) - a(2)
+      ablen(3) = b(3) - a(3)
+
+      aclen(1) = c(1) - a(1)
+      aclen(2) = c(2) - a(2)
+      aclen(3) = c(3) - a(3)
+
+      dlen(1) =   (ablen(2) * aclen(3)) - (ablen(3) * aclen(2))
+      dlen(2) = -((ablen(1) * aclen(3)) - (ablen(3) * aclen(1)))
+      dlen(3) =   (ablen(1) * aclen(2)) - (ablen(2) * aclen(1))
+
+      if ((Dlen(1)*a(1) + Dlen(2)*a(2) + Dlen(3)*a(3)) < 0.0) then
+        mpas_triangle_signed_area_sphere = -mpas_triangle_signed_area_sphere
+      end if
+
+   end function mpas_triangle_signed_area_sphere !}}}
+
+!***********************************************************************
+!
+!  routine mpas_point_in_polygon
+!
+!> \brief   Hit test to determine if a point is inside of a polygon
+!> \author  Matthew Hoffman
+!> \date    13 January 2015
+!> \details
+!>  This routine determines if a point is inside of a polygon.
+!>  This is difficult because floating point arithmetic prevents a precise
+!>  determination.  A tolerance is used to allow the point to be within the
+!>  the polygon within some tolerance.  This means it is possible for a point
+!>  to be identified to be within multiple polygons.  However, it avoids the
+!>  situation where a point on a edge could be 'orphaned' - determined
+!>  to not belong to *any* polygons.
+!-----------------------------------------------------------------------
+!   logical function mpas_point_in_polygon(point, polygonVertices, on_a_sphere)!{{{
+!      !-----------------------------------------------------------------
+!      ! input variables
+!      !-----------------------------------------------------------------
+!      real(kind=RKIND), dimension(3), intent(in) :: point  !< Input: 3d (x,y,z) point
+!      real(kind=RKIND), dimension(:,:), intent(in) :: polygonVertices  !< Input: 3d (x,y,z) points forming the polygon to test, second dimension should be 3
+!      logical, intent(in) :: on_a_sphere  !< Input: If on a sphere
+!      !-----------------------------------------------------------------
+!      ! local variables
+!      !-----------------------------------------------------------------
+!      real(kind=RKIND), dimension(3) :: normal_vector, crossprod, vec1, vec2
+!      integer :: polygonDegree, i
+!      integer, dimension(:), allocatable :: vertexNeighborFwd
+!      real(kind=RKIND), parameter :: eps = 1.0e-12_RKIND
+!
+!      if (on_a_sphere) then
+!         normal_vector = point
+!      else
+!         normal_vector = (/ 0.0_RKIND, 0.0_RKIND, 1.0_RKIND /)
+!      endif
+!
+!      polygonDegree = size(polygonVertices, 1)
+!      allocate(vertexNeighborFwd(polygonDegree))
+!      vertexNeighborFwd  = (/ (i+1, i = 1, polygonDegree) /)
+!      vertexNeighborFwd(polygonDegree) = 1
+!
+!      mpas_point_in_polygon = .true.
+!      do i = 1, polygonDegree
+!         vec1 = polygonVertices(vertexNeighborFwd(i),:) - polygonVertices(i,:)
+!         vec2 = point - polygonVertices(i,:)
+!         call mpas_cross_product_in_r3(vec1, vec2, crossprod)
+!         if (sum(crossprod * normal_vector) < (0.0_RKIND - eps)) then
+!            mpas_point_in_polygon = .false.
+!            exit  ! If the point is ouside one of the edges, then we need not look further.
+!         endif
+!      enddo
+!
+!      deallocate(vertexNeighborFwd)
+!
+!   end function mpas_point_in_polygon !}}}
+!************************************************************************
+!************************************************************************
+!************************************************************************
+!************************************************************************
+!************************************************************************
+!************************************************************************
+
+
    subroutine create_maps_NN(grid, f)
       implicit none
       type(interpgrid) :: grid
@@ -473,19 +839,29 @@ module utils
       type(interpgrid) :: grid
       character(len=*) :: var_name
 
-      integer, dimension(:,:), pointer :: map
-      real(kind=RKIND), dimension(:), pointer :: field
+      integer, dimension(:,:), pointer :: map, elOnElem
+      real(kind=RKIND), dimension(:,:,:), pointer :: weights
+      real(kind=RKIND), dimension(:), pointer :: field, vals
       real(kind=RKIND), dimension(:,:), pointer :: newfield
-      integer :: i, j
+      integer :: i, j, k, elem
+      integer, dimension(3) :: lens
 
       call get_variable_1dREAL(fin, var_name, field)
       
       if (size(field) == fin%nCells) then
-         map => grid%cell_map
+         if(grid%mode == NN) then
+            map => grid%cell_map
+         else if (grid%mode == WP) then
+            weights => grid%cell_weights
+            map => grid%vertex_map
+            call get_variable_2dINT(fin, 'cellsOnVertex', elOnElem)
+         end if
       else if (size(field) == fin%nEdges) then
          map => grid%edge_map 
+         weights => grid%edge_weights
       else if (size(field) == fin%nVertices) then
          map => grid%vertex_map
+         weights => grid%vertex_weights
       else
          write (0,*) "Variable "//trim(var_name)//" not dimensioned spatially"
          return
@@ -493,11 +869,25 @@ module utils
 
       allocate(newfield(grid%nx, grid%ny))
 
-      do j=1, grid%ny
-      do i=1, grid%nx
-         newfield(i, j) = field(map(i,j))
-      end do
-      end do
+      if (grid%mode == NN) then
+         do j=1, grid%ny
+         do i=1, grid%nx
+            newfield(i, j) = field(map(i,j))
+         end do
+         end do
+      else if (grid%mode == WP) then
+         lens = shape(weights)
+         allocate(vals(lens(1)))
+         do j=1, grid%ny
+         do i=1, grid%nx
+            elem = map(i,j)
+            do k=1, lens(1)
+               vals(k) = field(elOnElem(k, elem))
+            end do 
+            newfield(i, j) = mpas_wachspress_interpolate(weights(:,i,j), vals)
+         end do
+         end do
+      end if
 
       call put_variable_2dREAL(fout, newfield, var_name)
    end subroutine copy_data_1dREAL
@@ -747,28 +1137,25 @@ module utils
 
    end function sphere_distance
 
+   real(kind=RKIND) function sphere_distance_x(x1, y1, z1, x2, y2, z2)
+      implicit none
+      real(kind=RKIND), intent(in) :: x1, y1, z1, x2, y2, z2
+      real(kind=RKIND) :: radius
 
+      radius = sqrt(x1**2 + y1**2 + z1**2)
+      sphere_distance_x = acos(x1*x2 + y1*y2 + z1*z2) / radius
+   end function sphere_distance_x
 
+   subroutine con_lx(lat, lon, radius, x, y, z)
+      implicit none
 
+      real (kind=RKIND), intent(in) :: radius, lat, lon
+      real (kind=RKIND), intent(out) :: x, y, z
 
-
-
-
-
+      z = radius * sin(lat)
+      x = radius * cos(lon) * cos(lat)
+      y = radius * sin(lon) * cos(lat)
+   end subroutine con_lx
 
 end module utils
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-      
+     

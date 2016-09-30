@@ -129,6 +129,9 @@ program main
       stop
    end if
 
+   ! If -wp is given, use Wachspress mode for interpolation
+   if (index(arg, '-wp') > 0) grid%mode = WP
+
    allocate(files(nFiles))
    files(:) = ''
     

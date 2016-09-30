@@ -6,6 +6,7 @@ module params
    type :: interpgrid
       integer :: mode = NN
       integer, dimension(:,:), pointer :: cell_map, edge_map, vertex_map
+      real (kind=RKIND), dimension(:,:,:), pointer :: cell_weights, edge_weights, vertex_weights
       real (kind=RKIND) :: lat_start, lat_end, lon_start, lon_end
       real (kind=RKIND), dimension(:,:), pointer :: lats, lons
       integer :: nx, ny
