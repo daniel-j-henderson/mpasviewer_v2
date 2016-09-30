@@ -30,14 +30,14 @@ program main
 
    
    namelist /interpolator_settings/ Variables, outputfile, nx, ny, lat_start, lat_end, lon_start, lon_end
-!   namelist /rotate_settings/ original_latitude_degrees, original_longitude_degrees, &
-!                              new_latitude_degrees, new_longitude_degrees, birdseye_rotation_counter_clockwise_degrees
+   namelist /rotate_settings/ original_latitude_degrees, original_longitude_degrees, &
+                              new_latitude_degrees, new_longitude_degrees, birdseye_rotation_counter_clockwise_degrees
 
    inquire(file='namelist.input', exist=file_present)
    if (file_present) then
       open(41,file='namelist.input') 
       read(41,interpolator_settings)
-   !   read(41,rotate_settings)
+      read(41,rotate_settings)
       close(41)
    end if
     
@@ -152,7 +152,8 @@ program main
    call open_mpas_file(ncin, 'NF90_NOWRITE')
    write (0,*) "Opened "//trim(ncin%filename)
    write (0,*) "Calling create_grid"
-   call create_grid(grid, ncin)
+   call create_grid(grid, ncin, original_latitude_degrees, original_longitude_degrees, &
+                              new_latitude_degrees, new_longitude_degrees, birdseye_rotation_counter_clockwise_degrees)
 
    write (0,*) "Closing "//trim(ncin%filename)
    call close_mpas_file(ncin)
@@ -202,13 +203,13 @@ program main
       end do
 
       allocate(elem(grid%nx, grid%ny))
-      do i=1, grid%nx
-         elem(i,:) = grid%lons(i) * 180.0 / PI
-      end do
+
+      elem = grid%lons * 180.0 / PI
+
       call put_variable_2dREAL(ncout, elem, 'lon_pt')
-      do i=1, grid%ny
-         elem(:,i) = grid%lats(i) * 180.0 / PI
-      end do
+
+      elem = grid%lats * 180.0 / PI
+
       call put_variable_2dREAL(ncout, elem, 'lat_pt')
                  
       write (0,*) "Closing "//trim(ncin%filename)

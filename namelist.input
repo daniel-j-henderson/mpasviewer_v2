@@ -14,7 +14,7 @@
 &rotate_settings
 	original_latitude_degrees = 0.0
 	original_longitude_degrees = 0.0
-	new_latitude_degrees = 0.0
-	new_longitude_degrees = 0.0
+	new_latitude_degrees = -90.0
+	new_longitude_degrees = 180.0
 	birdseye_rotation_counter_clockwise_degrees = 0.0
 /

@@ -12,7 +12,6 @@ module mesh_rotate
   use params
   implicit none
 
-  integer, parameter :: RKIND = 8
   real(kind=RKIND) :: pii, omega
 
 
@@ -21,8 +20,8 @@ module mesh_rotate
 
 
 contains
-	
-	
+   
+   
    function needs_rotated(original_latitude_degrees, original_longitude_degrees, new_latitude_degrees, new_longitude_degrees, birdseye_rotation_counter_clockwise_degrees)
       implicit none
       
@@ -59,12 +58,9 @@ contains
       
       
       
-   subroutine rotate(ncid, xCell, yCell, zCell, xVertex, yVertex, zVertex, xEdge, yEdge, zEdge, &
-    				 original_latitude_degrees, original_longitude_degrees, new_latitude_degrees, new_longitude_degrees, birdseye_rotation_counter_clockwise_degrees)
+   subroutine rotate(grid, original_latitude_degrees, original_longitude_degrees, new_latitude_degrees, new_longitude_degrees, birdseye_rotation_counter_clockwise_degrees)
 
       implicit none
-
-      integer, intent(in) :: ncid
 
       real(kind=RKIND), intent(in) :: original_latitude_degrees
       real(kind=RKIND), intent(in) :: original_longitude_degrees
@@ -72,26 +68,9 @@ contains
       real(kind=RKIND), intent(in) :: new_longitude_degrees
       real(kind=RKIND), intent(in) :: birdseye_rotation_counter_clockwise_degrees   
 
-      integer :: i, varid
+      integer :: i, j, varid
 
-      real(kind=RKIND), dimension(:), intent(inout) :: xCell
-      real(kind=RKIND), dimension(:), intent(inout) :: yCell
-      real(kind=RKIND), dimension(:), intent(inout) :: zCell
-      real(kind=RKIND), dimension(:), allocatable :: latCell
-      real(kind=RKIND), dimension(:), allocatable :: lonCell
-
-      real(kind=RKIND), dimension(:), intent(inout) :: xVertex
-      real(kind=RKIND), dimension(:), intent(inout) :: yVertex
-      real(kind=RKIND), dimension(:), intent(inout) :: zVertex
-      real(kind=RKIND), dimension(:), allocatable :: latVertex
-      real(kind=RKIND), dimension(:), allocatable :: lonVertex
-
-      real(kind=RKIND), dimension(:), intent(inout) :: xEdge
-      real(kind=RKIND), dimension(:), intent(inout) :: yEdge
-      real(kind=RKIND), dimension(:), intent(inout) :: zEdge
-      real(kind=RKIND), dimension(:), allocatable :: latEdge
-      real(kind=RKIND), dimension(:), allocatable :: lonEdge
-
+      type(interpgrid), intent(inout) :: grid
 
       real (kind=RKIND) :: original_latitude_radians, original_longitude_radians, new_latitude_radians, new_longitude_radians
       real (kind=RKIND) :: thetaLat, thetaLon, thetaBirdsEye
@@ -99,26 +78,23 @@ contains
       real (kind=RKIND) :: uCrossProduct, vCrossProduct, wCrossProduct
       real (kind=RKIND) :: xNew, yNew, zNew
 
+      real (kind=RKIND), dimension(:,:), allocatable :: x_pt, y_pt, z_pt
+
       real (kind=RKIND) :: v
       real (kind=RKIND) :: ax, ay, az
       real (kind=RKIND) :: bx, by, bz
       real (kind=RKIND) :: cx, cy, cz
 
-      allocate(latCell(1:nCells))
-      allocate(lonCell(1:nCells))
-      
-      allocate(latVertex(1:nVertices))
-      allocate(lonVertex(1:nVertices))
-
-      
-      allocate(latEdge(1:nEdges))
-      allocate(lonEdge(1:nEdges))
-	  
-	  pii = 2.*asin(1.0)
+     pii = 2.*asin(1.0)
       omega = 2.0*pii / 86400.0
 
 
-
+      allocate(x_pt(grid%nx, grid%ny), y_pt(grid%nx, grid%ny), z_pt(grid%nx, grid%ny))
+      do j=1, grid%ny
+      do i=1, grid%nx
+         call convert_lx(x_pt(i, j), y_pt(i, j), z_pt(i, j), 1.0_RKIND, grid%lats(i, j), grid%lons(i, j))
+      end do
+      end do
 
       original_latitude_radians = degreesToRadians(original_latitude_degrees)
       original_longitude_radians = degreesToRadians(original_longitude_degrees)
@@ -141,24 +117,9 @@ contains
                          uCrossProduct, vCrossProduct, wCrossProduct)
 
       
-         call executeRotation(xCell, yCell, zCell, thetaLat, thetaLon, thetaBirdsEye, uCrossProduct, vCrossProduct, wCrossProduct, xNew, yNew, zNew)
-         call convert_xl(xCell, yCell, zCell, latCell, lonCell)
+         call executeRotation(x_pt, y_pt, z_pt, thetaLat, thetaLon, thetaBirdsEye, uCrossProduct, vCrossProduct, wCrossProduct, xNew, yNew, zNew)
+         call convert_xl(x_pt, y_pt, z_pt, grid%lats, grid%lons)
       
-
-     
-         call executeRotation(xVertex, yVertex, zVertex, thetaLat, thetaLon, thetaBirdsEye, uCrossProduct, vCrossProduct, wCrossProduct, xNew, yNew, zNew)
-         call convert_xl(xVertex, yVertex, zVertex, latVertex, lonVertex)
-     
-
-      
-         call executeRotation(xEdge, yEdge, zEdge, thetaLat, thetaLon, thetaBirdsEye, uCrossProduct, vCrossProduct, wCrossProduct, xNew, yNew, zNew)
-         call convert_xl(xEdge, yEdge, zEdge, latEdge, lonEdge)
-         
-        
-
-
-      
-
 
    end subroutine rotate
 
@@ -172,7 +133,7 @@ contains
 
       implicit none
 
-         real (kind=RKIND), dimension(:), intent(inout) :: x, y, z
+         real (kind=RKIND), dimension(:,:), intent(inout) :: x, y, z
          real (kind=RKIND), intent(in) :: thetaLat, thetaLon, thetaBirdsEye
          real (kind=RKIND), intent(in) :: uCrossProduct, vCrossProduct, wCrossProduct
          real (kind=RKIND), intent(in) :: xNew, yNew, zNew
@@ -223,58 +184,62 @@ contains
    
       implicit none
    
-      real (kind=RKIND), dimension(:), intent(in) :: x, y, z
-      real (kind=RKIND), dimension(:), intent(out) :: lat, lon
+      real (kind=RKIND), dimension(:,:), intent(in) :: x, y, z
+      real (kind=RKIND), dimension(:,:), intent(out) :: lat, lon
    
-      real (kind=RKIND), dimension(size(x)) :: dl
+      real (kind=RKIND), dimension(:,:), allocatable :: dl
       real (kind=RKIND) :: clat, eps
       parameter (eps=1.e-10)
       
-      integer :: i
+      integer :: i,j
+      integer, dimension(2) :: lens
+
+      lens = shape(x)
    
+      allocate(dl, mold=x)
       dl = sqrt(x*x + y*y + z*z)
       lat = asin(z/dl)
    
    !  check for being close to either pole
-   do i=1, size(x)
-      if (abs(x(i)) > eps) then
-   
-         if (abs(y(i)) > eps) then
-   
-            lon(i) = atan(abs(y(i)/x(i)))
-   
-            if ((x(i) <= 0.) .and. (y(i) >= 0.)) then
-               lon(i) = pii-lon(i)
-            else if ((x(i) <= 0.) .and. (y(i) < 0.)) then
-               lon(i) = lon(i)+pii
-            else if ((x(i) >= 0.) .and. (y(i) <= 0.)) then
-               lon(i) = 2*pii-lon(i)
+      do j=1, lens(2)
+      do i=1, lens(1)
+         if (abs(x(i,j)) > eps) then
+            if (abs(y(i,j)) > eps) then
+               lon(i,j) = atan(abs(y(i,j)/x(i,j)))
+      
+               if ((x(i,j) <= 0.) .and. (y(i,j) >= 0.)) then
+                  lon(i,j) = pii-lon(i,j)
+               else if ((x(i,j) <= 0.) .and. (y(i,j) < 0.)) then
+                  lon(i,j) = lon(i,j)+pii
+               else if ((x(i,j) >= 0.) .and. (y(i,j) <= 0.)) then
+                  lon(i,j) = 2*pii-lon(i,j)
+               end if
+      
+            else ! we're either on longitude 0 or 180
+      
+               if (x(i,j) > 0) then
+                  lon(i,j) = 0.
+               else
+                  lon(i,j) = pii
+               end if
+      
             end if
-   
-         else ! we're either on longitude 0 or 180
-   
-            if (x(i) > 0) then
-               lon(i) = 0.
+      
+         else if (abs(y(i,j)) > eps) then
+      
+            if (y(i,j) > 0) then
+               lon(i,j) = pii/2.
             else
-               lon(i) = pii
+               lon(i,j) = 3.*pii/2.
             end if
-   
+      
+         else  ! we are at a pole
+      
+            lon(i,j) = 0.
+      
          end if
-   
-      else if (abs(y(i)) > eps) then
-   
-         if (y(i) > 0) then
-            lon(i) = pii/2.
-         else
-            lon(i) = 3.*pii/2.
-         end if
-   
-      else  ! we are at a pole
-   
-         lon(i) = 0.
-   
-      end if
-	end do
+      end do
+      end do
    end subroutine convert_xl
 
 
@@ -293,7 +258,7 @@ contains
       
       integer :: i
       
-	  
+     
       z = radius * sin(lat)
       x = radius * cos(lon) * cos(lat)
       y = radius * sin(lon) * cos(lat)
@@ -313,35 +278,38 @@ contains
 
       implicit none
 
-      real (kind=RKIND), dimension(:), intent(inout) :: x, y, z
+      real (kind=RKIND), dimension(:,:), intent(inout) :: x, y, z
       real (kind=RKIND), intent(in) :: theta, a, b, c, u, v, w
       real (kind=RKIND) :: xp, yp, zp
 
       real (kind=RKIND) :: vw2, uw2, uv2
       real (kind=RKIND) :: m
       
-      integer :: i
+      integer :: i, j
+      integer, dimension(2) :: lens
       
-
+      lens = shape(x)
 
       vw2 = v**2.0 + w**2.0
       uw2 = u**2.0 + w**2.0
       uv2 = u**2.0 + v**2.0
       m = sqrt(u**2.0 + v**2.0 + w**2.0)
-	  
-	  do i=1, size(x)
-      xp = (a*vw2 + u*(-b*v-c*w+u*x(i)+v*y(i)+w*z(i)) + ((x(i)-a)*vw2+u*(b*v+c*w-v*y(i)-w*z(i)))*cos(theta) + m*(-c*v+b*w-w*y(i)+v*z(i))*sin(theta))/m**2.0
-      yp = (b*uw2 + v*(-a*u-c*w+u*x(i)+v*y(i)+w*z(i)) + ((y(i)-b)*uw2+v*(a*u+c*w-u*x(i)-w*z(i)))*cos(theta) + m*( c*u-a*w+w*x(i)-u*z(i))*sin(theta))/m**2.0
-      zp = (c*uv2 + w*(-a*u-b*v+u*x(i)+v*y(i)+w*z(i)) + ((z(i)-c)*uv2+w*(a*u+b*v-u*x(i)-v*y(i)))*cos(theta) + m*(-b*u+a*v-v*x(i)+u*y(i))*sin(theta))/m**2.0
+     
+      do j=1, lens(2)
+      do i=1, lens(1)
+         xp = (a*vw2 + u*(-b*v-c*w+u*x(i,j)+v*y(i,j)+w*z(i,j)) + ((x(i,j)-a)*vw2+u*(b*v+c*w-v*y(i,j)-w*z(i,j)))*cos(theta) + m*(-c*v+b*w-w*y(i,j)+v*z(i,j))*sin(theta))/m**2.0
+         yp = (b*uw2 + v*(-a*u-c*w+u*x(i,j)+v*y(i,j)+w*z(i,j)) + ((y(i,j)-b)*uw2+v*(a*u+c*w-u*x(i,j)-w*z(i,j)))*cos(theta) + m*( c*u-a*w+w*x(i,j)-u*z(i,j))*sin(theta))/m**2.0
+         zp = (c*uv2 + w*(-a*u-b*v+u*x(i,j)+v*y(i,j)+w*z(i,j)) + ((z(i,j)-c)*uv2+w*(a*u+b*v-u*x(i,j)-v*y(i,j)))*cos(theta) + m*(-b*u+a*v-v*x(i,j)+u*y(i,j))*sin(theta))/m**2.0
       
       ! alternate calculation
       !xp = (a*vw2 - u*(b*v+c*w-u*x-v*y-w*z))*(1-cos(theta)) + x*cos(theta) + (-c*v+b*w-w*y+v*z)*sin(theta)
       !yp = (b*uw2 - v*(a*u+c*w-u*x-v*y-w*z))*(1-cos(theta)) + y*cos(theta) + ( c*u-a*w+w*x-u*z)*sin(theta)
       !zp = (c*uv2 - w*(a*u+b*v-u*x-v*y-w*z))*(1-cos(theta)) + z*cos(theta) + (-b*u+a*v-v*x+u*y)*sin(theta)
 
-      x(i) = xp
-      y(i) = yp
-      z(i) = zp
+         x(i,j) = xp
+         y(i,j) = yp
+         z(i,j) = zp
+      end do
       end do
 
 
