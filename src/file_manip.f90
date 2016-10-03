@@ -451,8 +451,14 @@ module mpas_file_manip
       end do
 
       if (.not. is_spatial) then
-         write (0,*) "No spatial dimension for "//trim(var_name)//", skipping"
-         !var_name = ''
+         do i=1, ndims
+            ierr = nf90_inquire_dimension(ncin%ncid, dimids(i), dims(i))
+            if (ierr /= NF90_NOERR) call handle_err(ierr, 'nf90_inquire_dimension', .false., 'copy_variable_defmode', ncin%filename)
+            ierr = nf90_inq_dimid(ncout%ncid, dims(i), newdimids(i))
+            if (ierr /= NF90_NOERR) call handle_err(ierr, 'nf90_inq_dimid', .false., 'copy_variable_defmode', ncout%filename)
+         end do
+         ierr = nf90_def_var(ncout%ncid, var_name, xtype, newdimids(1:ndims), var_id)
+         if (ierr /= NF90_NOERR) call handle_err(ierr, 'nf90_def_var', .true., 'copy_variable_defmode', ncout%filename)
          return
       end if
       
@@ -480,7 +486,7 @@ module mpas_file_manip
    
    subroutine put_variable_1dINT(f, field, var_name)
       type(ncfile) :: f
-      integer, dimension(:,:), pointer :: field
+      integer, dimension(:), pointer :: field
       character(len=*) :: var_name
 
       integer :: var_id

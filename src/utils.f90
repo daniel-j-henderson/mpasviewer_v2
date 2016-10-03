@@ -581,7 +581,7 @@ module utils
          case(3)
             call copy_data_3dINT(fin, fout, var_name, grid)
          case default
-            write (0,*) "Bad ndims in copy_data"
+            
          end select
 
       else if (xtype == NF90_REAL .or. xtype == NF90_DOUBLE) then
@@ -624,6 +624,7 @@ module utils
          map => grid%vertex_map
       else
          write (0,*) "Variable "//trim(var_name)//" not dimensioned spatially"
+         call put_variable_1dINT(fout, field, var_name)
          return
       end if
 
@@ -700,7 +701,8 @@ module utils
          map => grid%vertex_map
          has_time = .true.
       else
-         write (0,*) "Not sure which map to use, copy data mode"
+         write (0,*) "Variable "//trim(var_name)//" not dimensioned spatially"
+         call put_variable_2dINT(fout, field, var_name)
          return
       end if
        
@@ -798,7 +800,8 @@ module utils
          map => grid%vertex_map
          has_time = .true.
       else
-         write (0,*) "Not sure which map to use, copy data mode"
+         write (0,*) "Variable "//trim(var_name)//" not dimensioned spatially"
+         call put_variable_3dINT(fout, field, var_name)
          return
       end if
        
@@ -860,10 +863,16 @@ module utils
          map => grid%edge_map 
          weights => grid%edge_weights
       else if (size(field) == fin%nVertices) then
-         map => grid%vertex_map
-         weights => grid%vertex_weights
+         if(grid%mode == NN) then
+            map => grid%vertex_map
+         else if (grid%mode == WP) then
+            weights => grid%vertex_weights
+            map => grid%cell_map
+            call get_variable_2dINT(fin, 'verticesOnCell', elOnElem)
+         end if
       else
          write (0,*) "Variable "//trim(var_name)//" not dimensioned spatially"
+         call put_variable_1dREAL(fout, field, var_name)
          return
       end if
 
@@ -898,10 +907,13 @@ module utils
       type(interpgrid) :: grid
       character(len=*) :: var_name
 
-      integer, dimension(:,:), pointer :: map
+      integer, dimension(:,:), pointer :: map, elOnElem
+      real(kind=RKIND), dimension(:,:,:), pointer :: weights
       real(kind=RKIND), dimension(:,:), pointer :: field
+      real(kind=RKIND), dimension(:), pointer :: vals
       real(kind=RKIND), dimension(:,:,:), pointer :: newfield
-      integer :: i, j, xtype, ierr, ndims, var_id
+      integer :: i, j, k, t, xtype, ierr, ndims, var_id, elem
+      integer, dimension(3) :: lens
       integer, dimension(2) :: dimids = 0, dimlens = 0
       character(len=StrKIND) :: dim_name
       logical :: has_time
@@ -935,38 +947,43 @@ module utils
          end if
       end do
 
-      if(dimlens(2) == fin%nCells) then
-         map => grid%cell_map
-         has_time = .false.
-      else if (dimlens(1) == fin%ncells) then
-         map => grid%cell_map
-         has_time = .true.
-      else if (dimlens(2) == fin%nEdges) then
-         map => grid%edge_map
-         has_time = .false.
-      else if (dimlens(1) == fin%nEdges) then
-         map => grid%edge_map
-         has_time = .true.
-      else if (dimlens(2) == fin%nVertices) then
-         map => grid%vertex_map
-         has_time = .false.
-      else if (dimlens(1) == fin%nVertices) then
-         map => grid%vertex_map
-         has_time = .true.
+      if (dimlens(1) == fin%nCells .or. dimlens(2) == fin%nCells) then
+         if(grid%mode == NN) then
+            map => grid%cell_map
+         else if (grid%mode == WP) then
+            weights => grid%cell_weights
+            map => grid%vertex_map
+            call get_variable_2dINT(fin, 'cellsOnVertex', elOnElem)
+         end if
+      else if (dimlens(1) == fin%nEdges .or. dimlens(2) == fin%nEdges) then
+         map => grid%edge_map 
+         weights => grid%edge_weights
+      else if (dimlens(1) == fin%nVertices .or. dimlens(2) == fin%nVertices) then
+         if(grid%mode == NN) then
+            map => grid%vertex_map
+         else if (grid%mode == WP) then
+            weights => grid%vertex_weights
+            map => grid%cell_map
+            call get_variable_2dINT(fin, 'verticesOnCell', elOnElem)
+         end if
       else
-         write (0,*) "Not sure which map to use, copy data mode"
+         write (0,*) "Variable "//trim(var_name)//" not dimensioned spatially"
+         call put_variable_2dREAL(fout, field, var_name)
          return
       end if
-       
-   
+
+      if(dimlens(1) == fin%nCells  .or. dimlens(1) == fin%nEdges .or. dimlens(1) == fin%nVertices) then
+         has_time = .true.
+      end if
+
       !if (dimlens(1) * dimlens(2) > MAX_CHUNK_SIZE) then
          ! Too big, must handle in slices 
       !   if (has_time) then
       !      do i=1, dimlens(2)
-      if(.false.) then         
-         write (0,*) "FALSE"
-      else
-         call get_variable_2dREAL(fin, var_name, field)
+
+      call get_variable_2dREAL(fin, var_name, field)
+      select case (grid%mode)
+      case (NN)
          if (has_time) then
             allocate(newfield(grid%nx, grid%ny, dimlens(2)))
             do j=1, grid%ny
@@ -982,9 +999,39 @@ module utils
             end do
             end do   
          end if
+      case (WP)
+         lens = shape(weights)
+         allocate(vals(lens(1)))
+         if (has_time) then
+            allocate(newfield(grid%nx, grid%ny, dimlens(2)))
+            do j=1, grid%ny
+            do i=1, grid%nx
+               elem = map(i,j)
+               do t=1, size(field(1,:)) 
+               do k=1, lens(1)
+                  vals(k) = field(elOnElem(k, elem), t)
+               end do 
+               newfield(i, j, t) = mpas_wachspress_interpolate(weights(:,i,j), vals)
+               end do
+            end do
+            end do
+         else 
+            allocate(newfield(grid%nx, grid%ny, dimlens(1)))
+            do j=1, grid%ny
+            do i=1, grid%nx
+               elem = map(i,j)
+               do t=1, size(field(:,1)) 
+               do k=1, lens(1)
+                  vals(k) = field(t,elOnElem(k, elem))
+               end do 
+               newfield(i, j, t) = mpas_wachspress_interpolate(weights(:,i,j), vals)
+               end do
+            end do
+            end do
+         end if
+      end select
 
-         call put_variable_3dREAL(fout, newfield, var_name)
-      end if
+      call put_variable_3dREAL(fout, newfield, var_name)
 
    end subroutine copy_data_2dREAL
 
@@ -994,10 +1041,13 @@ module utils
       type(interpgrid) :: grid
       character(len=*) :: var_name
 
-      integer, dimension(:,:), pointer :: map
+      integer, dimension(:,:), pointer :: map, elOnElem
+      real(kind=RKIND), dimension(:,:,:), pointer :: weights
       real(kind=RKIND), dimension(:,:,:), pointer :: field
       real(kind=RKIND), dimension(:,:,:,:), pointer :: newfield
-      integer :: i, j, ierr, ndims, var_id, xtype
+      real(kind=RKIND), dimension(:), pointer :: vals
+      integer, dimension(3) :: lens
+      integer :: i, j, k, u, t, elem, ierr, ndims, var_id, xtype
       integer, dimension(3) :: dimids = 0, dimlens = 0
       character(len=StrKIND) :: dim_name
       logical :: has_time
@@ -1031,44 +1081,49 @@ module utils
          end if
       end do
 
-      if(dimlens(3) == fin%nCells) then
-         map => grid%cell_map
-         has_time = .false.
-      else if (dimlens(2) == fin%ncells) then
-         map => grid%cell_map
-         has_time = .true.
-      else if (dimlens(3) == fin%nEdges) then
-         map => grid%edge_map
-         has_time = .false.
-      else if (dimlens(2) == fin%nEdges) then
-         map => grid%edge_map
-         has_time = .true.
-      else if (dimlens(3) == fin%nVertices) then
-         map => grid%vertex_map
-         has_time = .false.
-      else if (dimlens(2) == fin%nVertices) then
-         map => grid%vertex_map
-         has_time = .true.
+      if (dimlens(3) == fin%nCells .or. dimlens(2) == fin%nCells) then
+         if(grid%mode == NN) then
+            map => grid%cell_map
+         else if (grid%mode == WP) then
+            weights => grid%cell_weights
+            map => grid%vertex_map
+            call get_variable_2dINT(fin, 'cellsOnVertex', elOnElem)
+         end if
+      else if (dimlens(3) == fin%nEdges .or. dimlens(2) == fin%nEdges) then
+         map => grid%edge_map 
+         weights => grid%edge_weights
+      else if (dimlens(3) == fin%nVertices .or. dimlens(2) == fin%nVertices) then
+         if(grid%mode == NN) then
+            map => grid%vertex_map
+         else if (grid%mode == WP) then
+            weights => grid%vertex_weights
+            map => grid%cell_map
+            call get_variable_2dINT(fin, 'verticesOnCell', elOnElem)
+         end if
       else
-         write (0,*) "Not sure which map to use, copy data mode"
+         write (0,*) "Variable "//trim(var_name)//" not dimensioned spatially"
+         call put_variable_3dREAL(fout, field, var_name)
          return
       end if
-       
-   
+
+      if(dimlens(2) == fin%nCells  .or. dimlens(2) == fin%nEdges .or. dimlens(2) == fin%nVertices) then
+         has_time = .true.
+      end if
+
       !if (dimlens(1) * dimlens(2) > MAX_CHUNK_SIZE) then
          ! Too big, must handle in slices 
       !   if (has_time) then
       !      do i=1, dimlens(2)
-      if(.false.) then         
-         write (0,*) "FALSE"
-      else
-         call get_variable_3dREAL(fin, var_name, field)
+
+      call get_variable_3dREAL(fin, var_name, field)
+      select case (grid%mode)
+      case (NN)
          if (has_time) then
             allocate(newfield(grid%nx, grid%ny, dimlens(1), dimlens(3)))
             do j=1, grid%ny
             do i=1, grid%nx
                newfield(i, j, :, :) = field(:, map(i, j), :)
-            end do
+            end do   
             end do   
          else
             allocate(newfield(grid%nx, grid%ny, dimlens(1), dimlens(2)))
@@ -1078,9 +1133,43 @@ module utils
             end do
             end do   
          end if
+      case (WP)
+         lens = shape(weights)
+         allocate(vals(lens(1)))
+         if (has_time) then
+            allocate(newfield(grid%nx, grid%ny, dimlens(1), dimlens(3)))
+            do j=1, grid%ny
+            do i=1, grid%nx
+               elem = map(i,j)
+               do t=1, size(field(1, 1, :))
+               do u=1, size(field(:, 1, 1)) 
+               do k=1, lens(1)
+                  vals(k) = field(u, elOnElem(k, elem), t)
+               end do 
+               newfield(i, j, u, t) = mpas_wachspress_interpolate(weights(:,i,j), vals)
+               end do
+               end do
+            end do
+            end do
+         else 
+            allocate(newfield(grid%nx, grid%ny, dimlens(1), dimlens(2)))
+            do j=1, grid%ny
+            do i=1, grid%nx
+               elem = map(i,j)
+               do t=1, size(field(1, :, 1)) 
+               do u=1, size(field(:, 1, 1)) 
+               do k=1, lens(1)
+                  vals(k) = field(u,t,elOnElem(k, elem))
+               end do 
+               newfield(i, j, u, t) = mpas_wachspress_interpolate(weights(:,i,j), vals)
+               end do
+               end do
+            end do
+            end do
+         end if
+      end select
 
-         call put_variable_4dREAL(fout, newfield, var_name)
-      end if
+      call put_variable_4dREAL(fout, newfield, var_name)
 
    end subroutine copy_data_3dREAL
 
