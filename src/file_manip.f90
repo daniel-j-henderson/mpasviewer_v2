@@ -63,6 +63,7 @@ module mpas_file_manip
       implicit none
       
       class(ncfile) :: this
+
       if (associated(this%dims)) deallocate(this%dims)
       if (associated(this%vars)) deallocate(this%vars)
       if (associated(this%atts)) deallocate(this%atts)
@@ -795,7 +796,7 @@ module mpas_file_manip
       
       type(ncfile) :: f
       integer :: ierr
-
+      
       ierr = nf90_close(f%ncid)
       if (ierr /= NF90_NOERR) call handle_err(ierr, 'nf90_close', .true., 'close_mpas_file')
       call f%clean()
