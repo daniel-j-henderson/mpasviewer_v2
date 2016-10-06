@@ -65,6 +65,7 @@ module utils
       real(kind=RKIND), dimension(3) :: pt
       integer :: i, j, k, c, v, nVertices
 
+      write (0,*) "  calculating remapping weights"
 
       ! For cell-based fields
       call get_variable_1dREAL(f, 'latCell', latCell)
@@ -91,6 +92,7 @@ module utils
       call get_variable_1dINT(f, 'nEdgesOnCell', nEdgesOnCell)
       call get_variable_2dINT(f, 'verticesOnCell', verticesOnCell)
 
+      allocate(grid%vertex_weights(maxval(nEdgesOnCell), grid%nx, grid%ny))
       do j=1, grid%ny
       do i=1, grid%nx
          c = grid%cell_map(i,j)
@@ -554,6 +556,11 @@ module utils
       character(len=*) :: var_name
       integer :: ierr, var_id, xtype, ndims
 
+      integer(kind=8) :: t1, t2, rate
+
+      write (0,*) "Copying "//trim(var_name)
+      call system_clock(t1, rate)
+
       ierr = nf90_inq_varid(fin%ncid, trim(var_name), var_id)
       if (ierr /= NF90_NOERR) then
          write(0,*) '*********************************************************************************'
@@ -600,6 +607,8 @@ module utils
          write (0,*) "Bad xtype in copy_data"
          return
       end if
+      call system_clock(t2)
+      write (0,*) "Time to copy"//trim(var_name)//":", real(t2-t1) / real(rate)
 
    end subroutine copy_data
 
@@ -913,6 +922,7 @@ module utils
       real(kind=RKIND), dimension(:), pointer :: vals
       real(kind=RKIND), dimension(:,:,:), pointer :: newfield
       integer :: i, j, k, t, xtype, ierr, ndims, var_id, elem
+      integer :: iSlice, nSlices, slice_dim_len
       integer, dimension(3) :: lens
       integer, dimension(2) :: dimids = 0, dimlens = 0
       character(len=StrKIND) :: dim_name
@@ -921,32 +931,24 @@ module utils
       
       ierr = nf90_inq_varid(fin%ncid, trim(var_name), var_id)
       if (ierr /= NF90_NOERR) then
-         write(0,*) '*********************************************************************************'
-         write(0,*) 'Error inquiring varID of '//trim(var_name)//' in copy def mode'
-         write(0,*) 'ierr = ', ierr
-         write(0,*) '*********************************************************************************'
-         stop
+         call handle_err(ierr, 'nf90_inq_varid', .false., 'copy_data_2dREAL', fin%filename) 
+         return
       end if
 
       ierr = nf90_inquire_variable(fin%ncid, var_id, xtype=xtype, ndims=ndims, dimids=dimids)
       if (ierr /= NF90_NOERR) then
-         write(0,*) '*********************************************************************************'
-         write(0,*) 'Error inquiring variable '//trim(var_name)//' in copy def mode'
-         write(0,*) 'ierr = ', ierr
-         write(0,*) '*********************************************************************************'
-         stop
+         call handle_err(ierr, 'nf90_inquire_variable', .false., 'copy_data_2dREAL', fin%filename) 
+         return
       end if
 
       do i=1, 2
          ierr = nf90_inquire_dimension(fin%ncid, dimids(i), name=dim_name, len=dimlens(i))
-         if (ierr /= NF90_NOERR) then
-            write(0,*) '*********************************************************************************'
-            write(0,*) 'Error inquiring dimension '//trim(dim_name)//' in '//fin%filename
-            write(0,*) 'ierr = ', ierr
-            write(0,*) '*********************************************************************************'         
-         end if
+         if (ierr /= NF90_NOERR) call handle_err(ierr, 'nf90_inquire_dimension', .false., 'copy_data_2dREAL', fin%filename) 
       end do
 
+      
+      ! Determine what maps and remapping weights need to be used based on the
+      ! variable's dimensions
       if (dimlens(1) == fin%nCells .or. dimlens(2) == fin%nCells) then
          if(grid%mode == NN) then
             map => grid%cell_map
@@ -967,71 +969,94 @@ module utils
             call get_variable_2dINT(fin, 'verticesOnCell', elOnElem)
          end if
       else
-         write (0,*) "Variable "//trim(var_name)//" not dimensioned spatially"
+         ! If the variable is not dimensioned spatially, simply copy it over
+         ! as-is
          call put_variable_2dREAL(fout, field, var_name)
          return
       end if
 
+
+      ! If the least-rapidly-varying dimension of a field is not the spatial
+      ! dimension for that field, then it must be the time dimension
+      ! (NC_UNLIMITED)
       if(dimlens(1) == fin%nCells  .or. dimlens(1) == fin%nEdges .or. dimlens(1) == fin%nVertices) then
          has_time = .true.
+         slice_dim_len = dimlens(2)
+      else 
+         slice_dim_len = dimlens(1)
+         has_time = .false.
       end if
+      
 
-      !if (dimlens(1) * dimlens(2) > MAX_CHUNK_SIZE) then
-         ! Too big, must handle in slices 
-      !   if (has_time) then
-      !      do i=1, dimlens(2)
+      ! If the field is getting so large that we don't want to hold the whole
+      ! thing in memory, then we can interpolate in slices (each slice being
+      ! along the dimensions that are not the spatial dimension
+      if (dimlens(1) * dimlens(2) > MAX_CHUNK_SIZE) then
+         nSlices = slice_dim_len
+      else
+         nSlices = 1
+      end if
+      
 
-      call get_variable_2dREAL(fin, var_name, field)
-      select case (grid%mode)
-      case (NN)
-         if (has_time) then
-            allocate(newfield(grid%nx, grid%ny, dimlens(2)))
-            do j=1, grid%ny
-            do i=1, grid%nx
-               newfield(i, j, :) = field(map(i, j), :)
-            end do   
-            end do   
-         else
-            allocate(newfield(grid%nx, grid%ny, dimlens(1)))
-            do j=1, grid%ny
-            do i=1, grid%nx
-               newfield(i, j, :) = field(:, map(i, j))
-            end do
-            end do   
-         end if
-      case (WP)
-         lens = shape(weights)
-         allocate(vals(lens(1)))
-         if (has_time) then
-            allocate(newfield(grid%nx, grid%ny, dimlens(2)))
-            do j=1, grid%ny
-            do i=1, grid%nx
-               elem = map(i,j)
-               do t=1, size(field(1,:)) 
-               do k=1, lens(1)
-                  vals(k) = field(elOnElem(k, elem), t)
-               end do 
-               newfield(i, j, t) = mpas_wachspress_interpolate(weights(:,i,j), vals)
+      ! Perform interpolation in 'slices' of the non-spatial dimension. If the
+      ! field is small enough to do in 1 slice, then nSlices == 1
+      do iSlice = 1, nSlices
+         call get_variable_2dREAL(fin, var_name, field, start=(/merge(1, iSlice, has_time), merge(iSlice, 1, has_time)/), &
+                                  cnt=(/merge(dimlens(1), slice_dim_len/nSlices, has_time), merge(slice_dim_len/nSlices, dimlens(2), has_time)/))
+         select case (grid%mode)
+         case (NN)
+            if (has_time) then
+               if(.not. associated(newfield)) allocate(newfield(grid%nx, grid%ny, dimlens(2)))
+               do j=1, grid%ny
+               do i=1, grid%nx
+                  newfield(i, j, iSlice:iSlice+slice_dim_len/nSlices-1) = field(map(i, j), :)
+               end do   
+               end do   
+            else
+               if(.not. associated(newfield)) allocate(newfield(grid%nx, grid%ny, dimlens(1)))
+               do j=1, grid%ny
+               do i=1, grid%nx
+                  newfield(i, j, iSlice:iSlice+slice_dim_len/nSlices-1) = field(:, map(i, j))
                end do
-            end do
-            end do
-         else 
-            allocate(newfield(grid%nx, grid%ny, dimlens(1)))
-            do j=1, grid%ny
-            do i=1, grid%nx
-               elem = map(i,j)
-               do t=1, size(field(:,1)) 
-               do k=1, lens(1)
-                  vals(k) = field(t,elOnElem(k, elem))
-               end do 
-               newfield(i, j, t) = mpas_wachspress_interpolate(weights(:,i,j), vals)
+               end do   
+            end if
+         case (WP)
+            lens = shape(weights)
+            allocate(vals(lens(1)))
+            if (has_time) then
+               if(.not. associated(newfield)) allocate(newfield(grid%nx, grid%ny, dimlens(2)))
+               do j=1, grid%ny
+               do i=1, grid%nx
+                  elem = map(i,j)
+                  do t=1, size(field(1,:)) 
+                  do k=1, lens(1)
+                     vals(k) = field(elOnElem(k, elem), t)
+                  end do 
+                  newfield(i, j, iSlice+t-1) = mpas_wachspress_interpolate(weights(:,i,j), vals)
+                  end do
                end do
-            end do
-            end do
-         end if
-      end select
+               end do
+            else 
+               if(.not. associated(newfield)) allocate(newfield(grid%nx, grid%ny, dimlens(1)))
+               do j=1, grid%ny
+               do i=1, grid%nx
+                  elem = map(i,j)
+                  do t=1, size(field(:,1)) 
+                  do k=1, lens(1)
+                     vals(k) = field(t,elOnElem(k, elem))
+                  end do 
+                  newfield(i, j, iSlice+t-1) = mpas_wachspress_interpolate(weights(:,i,j), vals)
+                  end do
+               end do
+               end do
+            end if
+         end select
+
+      end do
 
       call put_variable_3dREAL(fout, newfield, var_name)
+
+      deallocate(field, newfield)
 
    end subroutine copy_data_2dREAL
 
@@ -1048,39 +1073,36 @@ module utils
       real(kind=RKIND), dimension(:), pointer :: vals
       integer, dimension(3) :: lens
       integer :: i, j, k, u, t, elem, ierr, ndims, var_id, xtype
+      integer :: iSlice, jSlice, niSlices, njSlices, islice_dim_len, jslice_dim_len
       integer, dimension(3) :: dimids = 0, dimlens = 0
       character(len=StrKIND) :: dim_name
       logical :: has_time
 
-      
+
+      integer(kind=8) :: t1, t2, t3, rate
+      real(kind=8) :: read_time
+
+
+      ! Get variable info from input file 
       ierr = nf90_inq_varid(fin%ncid, trim(var_name), var_id)
       if (ierr /= NF90_NOERR) then
-         write(0,*) '*********************************************************************************'
-         write(0,*) 'Error inquiring varID of '//trim(var_name)//' in copy def mode'
-         write(0,*) 'ierr = ', ierr
-         write(0,*) '*********************************************************************************'
-         stop
+         call handle_err(ierr, 'nf90_inq_varid', .false., 'copy_data_3dREAL', fin%filename) 
+         return
       end if
 
       ierr = nf90_inquire_variable(fin%ncid, var_id, xtype=xtype, ndims=ndims, dimids=dimids)
       if (ierr /= NF90_NOERR) then
-         write(0,*) '*********************************************************************************'
-         write(0,*) 'Error inquiring variable '//trim(var_name)//' in copy def mode'
-         write(0,*) 'ierr = ', ierr
-         write(0,*) '*********************************************************************************'
-         stop
+         call handle_err(ierr, 'nf90_inquire_variable', .false., 'copy_data_3dREAL', fin%filename) 
+         return
       end if
 
       do i=1, 3
          ierr = nf90_inquire_dimension(fin%ncid, dimids(i), name=dim_name, len=dimlens(i))
-         if (ierr /= NF90_NOERR) then
-            write(0,*) '*********************************************************************************'
-            write(0,*) 'Error inquiring dimension '//trim(dim_name)//' in '//fin%filename
-            write(0,*) 'ierr = ', ierr
-            write(0,*) '*********************************************************************************'         
-         end if
+         if (ierr /= NF90_NOERR) call handle_err(ierr, 'nf90_inquire_dimension', .false., 'copy_data_3dREAL', fin%filename) 
       end do
 
+      ! Determine what maps and remapping weights need to be used based on the
+      ! variable's dimensions
       if (dimlens(3) == fin%nCells .or. dimlens(2) == fin%nCells) then
          if(grid%mode == NN) then
             map => grid%cell_map
@@ -1101,75 +1123,138 @@ module utils
             call get_variable_2dINT(fin, 'verticesOnCell', elOnElem)
          end if
       else
-         write (0,*) "Variable "//trim(var_name)//" not dimensioned spatially"
+         ! If the variable is not dimensioned spatially, simply copy it over
+         ! as-is
          call put_variable_3dREAL(fout, field, var_name)
          return
       end if
 
+
+      ! If the least-rapidly-varying dimension of a field is not the spatial
+      ! dimension for that field, then it must be the time dimension
+      ! (NC_UNLIMITED)
       if(dimlens(2) == fin%nCells  .or. dimlens(2) == fin%nEdges .or. dimlens(2) == fin%nVertices) then
          has_time = .true.
+         islice_dim_len = dimlens(3)
+      else 
+         has_time = .false.
+         islice_dim_len = dimlens(2)
+      end if
+      jslice_dim_len = dimlens(1)
+
+
+      ! If the field is getting so large that we don't want to hold the whole
+      ! thing in memory, then we can interpolate in slices (each slice being
+      ! along the dimensions that are not the spatial dimension
+      if (dimlens(1) * dimlens(2) * dimlens(3) > MAX_CHUNK_SIZE) then
+         niSlices = islice_dim_len
+         njSlices = jslice_dim_len
+      else
+         njSlices = 1
+         niSlices = 1
       end if
 
-      !if (dimlens(1) * dimlens(2) > MAX_CHUNK_SIZE) then
-         ! Too big, must handle in slices 
-      !   if (has_time) then
-      !      do i=1, dimlens(2)
+      
+      ! For each slice of the field, interpolate it based on a) 'has_time' and
+      ! b) 'mode'
+      nullify(field)
 
-      call get_variable_3dREAL(fin, var_name, field)
-      select case (grid%mode)
-      case (NN)
-         if (has_time) then
-            allocate(newfield(grid%nx, grid%ny, dimlens(1), dimlens(3)))
-            do j=1, grid%ny
-            do i=1, grid%nx
-               newfield(i, j, :, :) = field(:, map(i, j), :)
-            end do   
-            end do   
-         else
-            allocate(newfield(grid%nx, grid%ny, dimlens(1), dimlens(2)))
-            do j=1, grid%ny
-            do i=1, grid%nx
-               newfield(i, j, :, :) = field(:, :, map(i, j))
-            end do
-            end do   
-         end if
-      case (WP)
-         lens = shape(weights)
-         allocate(vals(lens(1)))
-         if (has_time) then
-            allocate(newfield(grid%nx, grid%ny, dimlens(1), dimlens(3)))
-            do j=1, grid%ny
-            do i=1, grid%nx
-               elem = map(i,j)
-               do t=1, size(field(1, 1, :))
-               do u=1, size(field(:, 1, 1)) 
-               do k=1, lens(1)
-                  vals(k) = field(u, elOnElem(k, elem), t)
-               end do 
-               newfield(i, j, u, t) = mpas_wachspress_interpolate(weights(:,i,j), vals)
+      call system_clock(t1, rate)
+      read_time = 0.0
+      do iSlice = 1, niSlices
+      do jSlice = 1, njSlices
+         
+         call system_clock(t2)
+         call get_variable_3dREAL(fin, var_name, field, start=(/jSlice, merge(1, iSlice, has_time), merge(iSlice, 1, has_time)/), &
+                                  cnt=(/jslice_dim_len/njSlices, merge(dimlens(2), islice_dim_len/niSlices, has_time), merge(islice_dim_len/niSlices, dimlens(3), has_time)/))
+         call system_clock(t3)
+         read_time = read_time + real(t3-t2) / real(rate)
+
+         select case (grid%mode)
+
+         ! Nearest-Neighbor interpolation mode
+         case (NN)
+            ! If has_time, then the spatial dimension is the
+            ! second-to-least-rapidly-varying dimension (by MPAS convention),
+            ! otherwise it is the least-rapidly varying.
+            if (has_time) then
+               if(.not. associated(newfield)) allocate(newfield(grid%nx, grid%ny, dimlens(1), dimlens(3)))
+               do j=1, grid%ny
+               do i=1, grid%nx
+                  newfield(i, j, jSlice:jSlice+jslice_dim_len/njSlices-1, iSlice:iSlice+islice_dim_len/niSlices-1) = field(:, map(i, j), :)
+               end do   
+               end do   
+            else
+               if(.not. associated(newfield)) allocate(newfield(grid%nx, grid%ny, dimlens(1), dimlens(2)))
+               do j=1, grid%ny
+               do i=1, grid%nx
+                  newfield(i, j, jSlice:jSlice+jslice_dim_len/njSlices-1, iSlice:iSlice+islice_dim_len/niSlices-1) = field(:, :, map(i, j))
+               end do
+               end do   
+            end if
+
+
+         ! Wachspress weighted interpolation mode
+         case (WP)
+            lens = shape(weights)
+            if(.not. associated(vals)) allocate(vals(lens(1)))
+            if (has_time) then
+               if(.not. associated(newfield)) allocate(newfield(grid%nx, grid%ny, dimlens(1), dimlens(3)))
+               ! For every point to be interpolated to...
+               !write (0,*) shape(field)
+               do j=1, grid%ny
+               do i=1, grid%nx
+                  elem = map(i,j)
+                  ! And for every time/vert-level/soil-level/whatever...
+                  do t=1, size(field(1, 1, :))
+                  do u=1, size(field(:, 1, 1)) 
+                     ! Determine the values that must be weighted, and call the
+                     ! weighting function.
+                     ! e.g. for a cell-based field, 'elem' is the nearest
+                     ! vertex, elOnElem is cells on vertex 
+                     do k=1, lens(1)
+                        vals(k) = field(u, elOnElem(k, elem), t)
+                     end do 
+                     newfield(i, j, jSlice+u-1, iSlice+t-1) = mpas_wachspress_interpolate(weights(:,i,j), vals)
+                  end do
+                  end do
                end do
                end do
-            end do
-            end do
-         else 
-            allocate(newfield(grid%nx, grid%ny, dimlens(1), dimlens(2)))
-            do j=1, grid%ny
-            do i=1, grid%nx
-               elem = map(i,j)
-               do t=1, size(field(1, :, 1)) 
-               do u=1, size(field(:, 1, 1)) 
-               do k=1, lens(1)
-                  vals(k) = field(u,t,elOnElem(k, elem))
-               end do 
-               newfield(i, j, u, t) = mpas_wachspress_interpolate(weights(:,i,j), vals)
+            else 
+               ! Same procedure as above, but using a different dimension of the
+               ! field. 
+               if(.not. associated(newfield)) allocate(newfield(grid%nx, grid%ny, dimlens(1), dimlens(2)))
+               do j=1, grid%ny
+               do i=1, grid%nx
+                  elem = map(i,j)
+                  do t=1, size(field(1, :, 1)) 
+                  do u=1, size(field(:, 1, 1)) 
+                     do k=1, lens(1)
+                        vals(k) = field(u,t,elOnElem(k, elem))
+                     end do 
+                     newfield(i, j, iSlice+u-1, jSlice+t-1) = mpas_wachspress_interpolate(weights(:,i,j), vals)
+                  end do
+                  end do
                end do
                end do
-            end do
-            end do
-         end if
-      end select
+            end if
+         end select
+
+      
+      ! End slices
+      end do
+      end do
+
+      call system_clock(t2)
+      write (0,*) "  interpolation time:", real(t2-t1) / real(rate)
+      write (0,*) "  read time:", read_time
 
       call put_variable_4dREAL(fout, newfield, var_name)
+
+      call system_clock(t3)
+      write (0,*) "  write time:", real(t3-t2) / real(rate)
+
+      deallocate(field, newfield)
 
    end subroutine copy_data_3dREAL
 

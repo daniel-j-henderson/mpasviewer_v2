@@ -196,7 +196,7 @@ contains
 
       lens = shape(x)
    
-      allocate(dl, mold=x)
+      allocate(dl(lens(1), lens(2)))
       dl = sqrt(x*x + y*y + z*z)
       lat = asin(z/dl)
    

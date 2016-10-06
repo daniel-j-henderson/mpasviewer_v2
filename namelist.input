@@ -1,5 +1,5 @@
 &interpolator_settings
-	Variables = 'ter', 'zz', 'areaCell', 'bdyMaskCell' !Desired variables to interpolate. Up to 20.
+	!Variables = 'ter', 'zz', 'areaCell', 'bdyMaskCell' !Desired variables to interpolate. Up to 20.
 	
 	outputfile = 'myNewFile.' !Whatever you'd like to call the output file
 	

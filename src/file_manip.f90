@@ -703,18 +703,21 @@ module mpas_file_manip
       
    end subroutine get_variable_1dREAL
 
-   subroutine get_variable_2dREAL(f, var_name, field)
+   subroutine get_variable_2dREAL(f, var_name, field, start, cnt)
       implicit none
 
       type(ncfile) :: f
       character(len=*), intent(in) :: var_name
       real(kind=RKIND), dimension(:,:), pointer, intent(inout) :: field
+      integer, dimension(2), intent(in), optional :: start, cnt
 
       integer :: var_id, n1, n2, ierr
-      integer, dimension(2) :: dim_ids
+      integer, dimension(2) :: dim_ids, s, c
 
       !if (associated(field)) deallocate(field)
       
+
+
       ierr = nf90_inq_varid(f%ncid, var_name, var_id)
       if (ierr /= NF90_NOERR) call handle_err(ierr, 'nf90_inq_varid', .true., 'get_variable_2dREAL', f%filename)
 
@@ -728,21 +731,27 @@ module mpas_file_manip
       ierr = nf90_inquire_dimension(f%ncid, dim_ids(2), len=n2)
       if (ierr /= NF90_NOERR) call handle_err(ierr, 'nf90_inquire_dimension', .true., 'get_variable_2dREAL', f%filename)
 
-      allocate(field(n1, n2))
-      ierr = nf90_get_var(f%ncid, var_id, field, start=(/1,1/), count = (/n1, n2/))
+      s = (/1,1/)
+      c = (/n1, n2/)
+
+      if (present(start)) s = start
+      if (present(cnt)) c = cnt
+      if(.not. associated(field)) allocate(field(c(1), c(2)))
+      ierr = nf90_get_var(f%ncid, var_id, field, start=s, count = c)
       if (ierr /= NF90_NOERR) call handle_err(ierr, 'nf90_get_var', .true., 'get_variable_2dREAL', f%filename)
       
    end subroutine get_variable_2dREAL
 
-   subroutine get_variable_3dREAL(f, var_name, field)
+   subroutine get_variable_3dREAL(f, var_name, field, start, cnt)
       implicit none
 
       type(ncfile) :: f
       character(len=*), intent(in) :: var_name
       real(kind=RKIND), dimension(:,:,:), pointer, intent(inout) :: field
+      integer, dimension(3), intent(in), optional :: start, cnt
 
       integer :: var_id, n1, n2, n3, ierr
-      integer, dimension(3) :: dim_ids
+      integer, dimension(3) :: dim_ids, s, c
 
       !if (associated(field)) deallocate(field)
       
@@ -761,8 +770,13 @@ module mpas_file_manip
       ierr = nf90_inquire_dimension(f%ncid, dim_ids(3), len=n3)
       if (ierr /= NF90_NOERR) call handle_err(ierr, 'nf90_inquire_dimension', .true., 'get_variable_3dREAL', f%filename)
 
-      allocate(field(n1, n2, n3))
-      ierr = nf90_get_var(f%ncid, var_id, field, start=(/1,1,1/), count = (/n1, n2, n3/))
+      s = (/1,1,1/)
+      c = (/n1, n2, n3/)
+      
+      if (present(start)) s = start
+      if (present(cnt)) c = cnt
+      if(.not. associated(field)) allocate(field(c(1), c(2), c(3)))
+      ierr = nf90_get_var(f%ncid, var_id, field, start=s, count = c)
       if (ierr /= NF90_NOERR) call handle_err(ierr, 'nf90_get_var', .true., 'get_variable_3dREAL', f%filename)
       
    end subroutine get_variable_3dREAL
