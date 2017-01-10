@@ -4,6 +4,11 @@ LIBS = $(shell nc-config --libs)
 
 INCLUDES += -I$(shell nc-config --includedir)
 
+NCLIBF = -lnetcdff
+ifneq ($(wildcard $(NETCDF)/lib/libnetcdff.*), ) # CHECK FOR NETCDF4
+		  LIBS += $(NCLIBF)
+endif # CHECK FOR NETCDF4
+
 all:
 	@echo "*********************************************"
 	@echo "  Use a target, such as ifort or gfortran"
