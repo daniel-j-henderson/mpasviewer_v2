@@ -1203,6 +1203,7 @@ module utils
        nearest_distance = current_distance
        do i = 1, nEdgesOnCell(current_cell)
           iCell = cellsOnCell(i,current_cell)
+          if (iCell < 1 .or. iCell > size(latCell)) cycle
           d = sphere_distance(latCell(iCell), lonCell(iCell), target_lat, target_lon, 1.0_RKIND)
           if (d < nearest_distance) then
              nearest_cell_path = iCell
